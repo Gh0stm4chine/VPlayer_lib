@@ -2,6 +2,7 @@
 #
 # build_android.sh
 # Copyright (c) 2012 Jacek Marchwicki
+# Modified work Copyright 2014 Matthew Ng
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +36,17 @@ ENABLE_X264=yes
 #       scratch if you want to use fdk-aac. Uncomment to use fdk-aac
 # PREFER_FDK_AAC=yes
 
+#   Use GCC or Clang
+#       GCC is being deprecated and Android recommends clang. If you use clang,
+#       the toolchain root below will be used. By default it will use clang, use
+#       GCC by uncommenting below. GCC can build mips and armv5 while not for
+#       clang (linker errors and deprecated).
+#USE_GCC=yes
+
+#   Specify Toolchain root
+#       https://developer.android.com/ndk/guides/standalone_toolchain.html#creating_the_toolchain
+TOOLCHAIN_ROOT=/tmp/android-toolchain/
+
 #
 # =======================================================================
 
@@ -51,6 +63,7 @@ fi
 # Check the Application.mk for the architectures we need to compile for
 while read line; do
     if [[ $line =~ ^APP_ABI\ *?:= ]]; then
+        line=`echo $line | sed 's/\\r//g'`
         archs=(${line#*=})
         if [[ " ${archs[*]} " == *" all "* ]]; then
             build_all=true
@@ -69,11 +82,11 @@ fi
 PLATFORM_VERSION=9
 while read line; do
     if [[ $line =~ ^APP_PLATFORM\ *?:= ]]; then
+        line=`echo $line | sed 's/\\r//g'`
         PLATFORM_VERSION=${line#*-}
         break
     fi
 done <"../VPlayer_library/jni/Application.mk"
-echo Trying to find $NDK/platforms/android-$PLATFORM_VERSION
 if [ ! -d "$NDK/platforms/android-$PLATFORM_VERSION" ]; then
     echo "Android platform doesn't exist, try to find a lower version than" $PLATFORM_VERSION
     while [ $PLATFORM_VERSION -gt 0 ]; do
@@ -88,7 +101,6 @@ if [ ! -d "$NDK/platforms/android-$PLATFORM_VERSION" ]; then
     fi
 fi
 echo Using Android platform from $NDK/platforms/android-$PLATFORM_VERSION
-PLATFORM_VERSION=android-$PLATFORM_VERSION
 
 # Get the newest arm-linux-androideabi version
 if [ -z "$TOOLCHAIN_VER" ]; then
@@ -106,6 +118,24 @@ if [ -z "$TOOLCHAIN_VER" ]; then
     fi
 fi
 echo Using $NDK/toolchains/{ARCH}-$TOOLCHAIN_VER
+if [ ! -z "$USE_GCC" ]; then
+    echo "Compile with GCC"
+else
+    echo "Compile with clang (standalone toolchain)"
+    # If using clang, check to see if there is gas-preprocessor.pl avaliable, this will require sudo!
+    GAS_PREPRO_PATH="/usr/local/bin/gas-preprocessor.pl"
+    if [ -z "$USE_GCC" ] && [ ! -x "$GAS_PREPRO_PATH" ]; then
+        echo "Downloading needed gas-preprocessor.pl for FFMPEG"
+        wget --no-check-certificate https://raw.githubusercontent.com/FFmpeg/gas-preprocessor/master/gas-preprocessor.pl
+        chmod +x gas-preprocessor.pl
+        mv gas-preprocessor.pl $GAS_PREPRO_PATH
+        if  [ ! -x "$GAS_PREPRO_PATH" ]; then
+            echo "  Cannot move file, please run this script with permissions [ sudo -E ./build_android.sh ]"
+            exit 1
+        fi
+        echo "  Finished downloading gas-preprocessor.pl"
+    fi
+fi
 
 # Read from the Android.mk file to build subtitles (fribidi, libpng, freetype2, libass)
 while read line; do
@@ -116,28 +146,82 @@ while read line; do
 done <"../VPlayer_library/jni/Android.mk"
 
 OS=`uname -s | tr '[A-Z]' '[a-z]'`
+function setup
+{
+    # For clang, use standalone toolchain, gcc use the default NDK folder
+    PREBUILT=$TOOLCHAIN_ROOT
+    PLATFORM=$NDK/platforms/android-$PLATFORM_VERSION/arch-$ARCH/
+    if [ ! -d "$PREBUILT" ] || [ ! -z "$USE_GCC" ]; then
+        if [ -d "$NDK/toolchains/$EABIARCH-$TOOLCHAIN_VER/" ]; then
+            PREBUILT=$NDK/toolchains/$EABIARCH-$TOOLCHAIN_VER/prebuilt/$OS-x86
+        else
+            PREBUILT=$NDK/toolchains/$ARCH-$TOOLCHAIN_VER/prebuilt/$OS-x86
+        fi
+        if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
+    fi
+    export PATH=${PATH}:$PREBUILT/bin/
+    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
+
+    # Changes in NDK leads to new folder paths, add them if they exist
+    # https://android.googlesource.com/platform/ndk.git/+/master/docs/UnifiedHeaders.md
+    if [ -z "$USE_GCC" ] && [ -d "$TOOLCHAIN_ROOT/sysroot" ]; then
+        SYSROOT=$TOOLCHAIN_ROOT/sysroot
+    elif [ -d "$NDK/sysroot" ]; then
+        SYSROOT=$NDK/sysroot
+    else
+        SYSROOT=$PLATFORM
+    fi
+    if [ -d "$SYSROOT/usr/include/$EABIARCH/" ]; then
+        OPTIMIZE_CFLAGS=$OPTIMIZE_CFLAGS" -isystem $SYSROOT/usr/include/$EABIARCH/ -D__ANDROID_API__=$PLATFORM_VERSION"
+    fi
+
+    # Find libgcc to directly link to the compiler for only arm architecture
+    LIBGCC_LINK=
+    if [[ $ARCH == *"arm"* ]]; then
+        LIBGCC_PATH=
+        folders=$PREBUILT/lib/gcc/$EABIARCH/$TOOLCHAIN_VER*
+        for i in $folders; do
+            if [ -f "$i/libgcc.a" ]; then
+                LIBGCC_PATH="$i/libgcc.a"
+                break
+            fi
+        done
+        if [ -z "$LIBGCC_PATH" ]; then
+            echo "Failed: Unable to find libgcc.a from toolchain path, file a bug or look for it"
+            exit 1
+        fi
+        LIBGCC_LINK="-l$LIBGCC_PATH"
+    else
+        LIBGCC_LINK="-lgcc"
+    fi
+
+    CFLAGS=$OPTIMIZE_CFLAGS
+    export LDFLAGS="-lc -lm -ldl -llog -nostdlib $LIBGCC_LINK"
+    export CPPFLAGS="$CFLAGS"
+    export CFLAGS="$CFLAGS"
+    export CXXFLAGS="$CFLAGS"
+    if [ ! -z "$USE_GCC" ]; then
+        export CXX="${CROSS_COMPILE}g++ --sysroot=$SYSROOT"
+        export AS="${CROSS_COMPILE}gcc --sysroot=$SYSROOT"
+        export CC="${CROSS_COMPILE}gcc --sysroot=$SYSROOT"
+        export LDFLAGS="$LDFLAGS -Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib"
+    else
+        export CXX="clang++"
+        export AS="clang"
+        export CC="clang"
+        export LDFLAGS="$LDFLAGS -Wl,-rpath-link=$SYSROOT/usr/lib"
+    fi
+    export NM="${CROSS_COMPILE}nm"
+    export STRIP="${CROSS_COMPILE}strip"
+    export RANLIB="${CROSS_COMPILE}ranlib"
+    export AR="${CROSS_COMPILE}ar"
+    export LD="${CROSS_COMPILE}ld"
+}
 function build_x264
 {
     find x264/ -name "*.o" -type f -delete
-    if [ ! -z "$ENABLE_X264" ]; then
-        PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-        export PATH=${PATH}:$PREBUILT/bin/
-        CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-        CFLAGS=$OPTIMIZE_CFLAGS
+    if [ ! -z "$ENABLE_X264" ] && [ "$CPU" != "armv5" ]; then
         ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-gpl --enable-libx264"
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-        export CPPFLAGS="$CFLAGS"
-        export CFLAGS="$CFLAGS"
-        export CXXFLAGS="$CFLAGS"
-        export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-        export AS="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-        export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-        export NM="${CROSS_COMPILE}nm"
-        export STRIP="${CROSS_COMPILE}strip"
-        export RANLIB="${CROSS_COMPILE}ranlib"
-        export AR="${CROSS_COMPILE}ar"
-        export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib -nostdlib -lc -lm -ldl -llog -lgcc"
-
         cd x264
         ./configure --prefix=$(pwd)/$PREFIX --disable-gpac --host=$ARCH-linux --enable-pic --enable-static $ADDITIONAL_CONFIGURE_FLAG || exit 1
         make clean || exit 1
@@ -148,22 +232,6 @@ function build_x264
 
 function build_amr
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS=$OPTIMIZE_CFLAGS
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib -nostdlib -lc -lm -ldl -llog"
-
     cd vo-amrwbenc
     ./configure \
         --prefix=$(pwd)/$PREFIX \
@@ -174,7 +242,6 @@ function build_amr
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make -j4 install || exit 1
     cd ..
@@ -182,22 +249,6 @@ function build_amr
 
 function build_aac
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS=$OPTIMIZE_CFLAGS
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib -nostdlib -lc -lm -ldl -llog"
-
     if [ ! -z "$PREFER_FDK_AAC" ]; then
         echo "Using fdk-aac encoder for AAC"
         find vo-aacenc/ -name "*.o" -type f -delete
@@ -209,7 +260,6 @@ function build_aac
         ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-libvo-aacenc"
         cd vo-aacenc
     fi
-
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
     ./configure \
@@ -221,29 +271,12 @@ function build_aac
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make -j4 install || exit 1
     cd ..
 }
 function build_png
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS=$OPTIMIZE_CFLAGS
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -nostdlib -lc -lm -ldl -llog -lgcc"
-
     cd libpng
     ./configure \
         --prefix=$(pwd)/$PREFIX \
@@ -254,29 +287,12 @@ function build_png
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make -j4 install || exit 1
     cd ..
 }
 function build_freetype2
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS=$OPTIMIZE_CFLAGS
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -nostdlib -lc -lm -ldl -llog"
-
     cd freetype2
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
@@ -289,7 +305,6 @@ function build_freetype2
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make -j4 || exit 1
     make -j4 install || exit 1
@@ -297,22 +312,6 @@ function build_freetype2
 }
 function build_ass
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS="$OPTIMIZE_CFLAGS"
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -nostdlib -lc -lm -ldl -llog"
-
     cd libass
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
@@ -326,29 +325,13 @@ function build_ass
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make V=1 -j4 install || exit 1
     cd ..
 }
 function build_fribidi
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
     export PATH=${PATH}:$PREBUILT/bin/
-    CROSS_COMPILE=$PREBUILT/bin/$EABIARCH-
-    CFLAGS="$OPTIMIZE_CFLAGS -std=gnu99"
-#CFLAGS=" -I$ARM_INC -fpic -DANDROID -fpic -mthumb-interwork -ffunction-sections -funwind-tables -fstack-protector -fno-short-enums -D__ARM_ARCH_5__ -D__ARM_ARCH_5T__ -D__ARM_ARCH_5E__ -D__ARM_ARCH_5TE__  -Wno-psabi -march=armv5te -mtune=xscale -msoft-float -mthumb -Os -fomit-frame-pointer -fno-strict-aliasing -finline-limit=64 -DANDROID  -Wa,--noexecstack -MMD -MP "
-    export CPPFLAGS="$CFLAGS"
-    export CFLAGS="$CFLAGS"
-    export CXXFLAGS="$CFLAGS"
-    export CXX="${CROSS_COMPILE}g++ --sysroot=$PLATFORM"
-    export CC="${CROSS_COMPILE}gcc --sysroot=$PLATFORM"
-    export NM="${CROSS_COMPILE}nm"
-    export STRIP="${CROSS_COMPILE}strip"
-    export RANLIB="${CROSS_COMPILE}ranlib"
-    export AR="${CROSS_COMPILE}ar"
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib -nostdlib -lc -lm -ldl -llog"
-
     cd fribidi
     ./configure \
         --prefix=$(pwd)/$PREFIX \
@@ -360,17 +343,13 @@ function build_fribidi
         --with-pic \
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
-
     make clean || exit 1
     make -j4 install || exit 1
     cd ..
 }
 function build_ffmpeg
 {
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    CC=$PREBUILT/bin/$EABIARCH-gcc
-    CROSS_PREFIX=$PREBUILT/bin/$EABIARCH-
-    PKG_CONFIG=${CROSS_PREFIX}pkg-config
+    PKG_CONFIG=${CROSS_COMPILE}pkg-config
     if [ ! -f $PKG_CONFIG ];
     then
         cat > $PKG_CONFIG << EOF
@@ -379,24 +358,23 @@ pkg-config \$*
 EOF
         chmod u+x $PKG_CONFIG
     fi
-    NM=$PREBUILT/bin/$EABIARCH-nm
     cd ffmpeg
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
     ./configure --target-os=linux \
         --prefix=$PREFIX \
         --enable-cross-compile \
-        --extra-libs="-lgcc" \
         --arch=$ARCH \
         --cc=$CC \
-        --cross-prefix=$CROSS_PREFIX \
+        --cross-prefix=$CROSS_COMPILE \
         --nm=$NM \
-        --sysroot=$PLATFORM \
-        --extra-cflags=" -O3 -fpic -DANDROID -DHAVE_SYS_UIO_H=1 -Dipv6mr_interface=ipv6mr_ifindex -fasm -Wno-psabi -fno-short-enums  -fno-strict-aliasing -finline-limit=300 $OPTIMIZE_CFLAGS " \
+        --sysroot=$SYSROOT \
+        --extra-libs=$LIBGCC_LINK \
+        --extra-cflags=" -O3 -DANDROID -fpic -DHAVE_SYS_UIO_H=1 -Dipv6mr_interface=ipv6mr_ifindex -fasm -Wno-psabi -fno-short-enums  -fno-strict-aliasing -finline-limit=300 $OPTIMIZE_CFLAGS" \
         --disable-shared \
         --enable-static \
         --enable-runtime-cpudetect \
-        --extra-ldflags="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -nostdlib -lc -lm -ldl -llog -L$PREFIX/lib" \
+        --extra-ldflags="-Wl,-rpath-link=$SYSROOT/usr/lib -L$SYSROOT/usr/lib  -nostdlib -lc -lm -ldl -llog -L$PREFIX/lib" \
         --extra-cflags="-I$PREFIX/include" \
         --enable-libvo-amrwbenc \
         --enable-bsfs \
@@ -430,8 +408,7 @@ EOF
 
 function build_one {
     cd ffmpeg
-    PLATFORM=$NDK/platforms/$PLATFORM_VERSION/arch-$ARCH/
-    export LDFLAGS="-Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib -nostdlib -lc -lm -ldl -llog -lz"
+    export LDFLAGS=$LDFLAGS" -Wl,--allow-multiple-definition"
 
     # Get all the object files inside FFMPEG
     FFMPEG_OBJS="libavutil/ libavcodec/ libavcodec/$ARCH/ libavformat/ libswresample/ libswscale/ libavfilter/ compat/ libavutil/$ARCH/"
@@ -457,8 +434,7 @@ function build_one {
     # Finally package into shared library
     rm -f libavcodec/inverse.o ../vo-aacenc/common/cmnMemory.o
     $CC -o $OUT_LIBRARY -shared -nostdlib -Wl,-z,noexecstack -Bsymbolic $LDFLAGS $EXTRA_LDFLAGS $OBJS \
-          $(find ../ -name "*.o" -not -path "../ffmpeg/*" | tr '\n' ' ') \
-          -zmuldefs $PREBUILT/lib/gcc/$EABIARCH/$TOOLCHAIN_VER/libgcc.a
+          $(find ../ -name "*.o" -not -path "../ffmpeg/*" | tr '\n' ' ')
     $PREBUILT/bin/$EABIARCH-strip --strip-unneeded $OUT_LIBRARY
     cd ..
 }
@@ -478,26 +454,56 @@ function build_subtitles
         find libass/ -name "*.o" -type f -delete
     fi
 }
+function build
+{
+    echo "================================================================"
+    echo "================================================================"
+    echo "                      Building $ARCH"
+    echo "$OUT_LIBRARY"
+    echo "================================================================"
+    echo "================================================================"
+    if [ -z "$USE_GCC" ] && [ ! -z "$TOOLCHAIN_ROOT" ] && [ ! -d "$TOOLCHAIN_ROOT/$EABIARCH" ]; then
+        echo "Creating standalone toolchain in $TOOLCHAIN_ROOT"
+        $NDK/build/tools/make_standalone_toolchain.py --arch "$ARCH" --api $PLATFORM_VERSION --stl=libc++ --install-dir $TOOLCHAIN_ROOT --force
+        echo "      Built the standalone toolchain"
+    fi
+    setup
+    build_x264
+    build_amr
+    build_aac
+    build_subtitles
+    build_ffmpeg
+    build_one
+}
 
-#arm v5
-if [[ " ${archs[*]} " == *" armeabi "* ]] || [ "$build_all" = true ]; then
-EABIARCH=arm-linux-androideabi
-ARCH=arm
-CPU=armv5
-OPTIMIZE_CFLAGS="-marm -march=$CPU"
-PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi
-OUT_LIBRARY=$PREFIX/libffmpeg.so
-ADDITIONAL_CONFIGURE_FLAG=
-SONAME=libffmpeg.so
-PREBUILT=$NDK/toolchains/arm-linux-androideabi-$TOOLCHAIN_VER/prebuilt/$OS-x86
-if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
-# If you want x264, compile armv6
-find x264/ -name "*.o" -type f -delete
-build_amr
-build_aac
-build_subtitles
-build_ffmpeg
-build_one
+# Deprecated architectures only compilable with GCC (which is also deprecated)
+if [ ! -z "$USE_GCC" ]; then
+    #mips
+    if [[ " ${archs[*]} " == *" mips "* ]] || [ "$build_all" = true ]; then
+    EABIARCH=mipsel-linux-android
+    ARCH=mips
+    OPTIMIZE_CFLAGS="-EL -march=mips32 -mips32 -mhard-float"
+    PREFIX=../../VPlayer_library/jni/ffmpeg-build/mips
+    OUT_LIBRARY=$PREFIX/libffmpeg.so
+    ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2"
+    SONAME=libffmpeg.so
+    build
+    fi
+
+    #arm v5
+    if [[ " ${archs[*]} " == *" armeabi "* ]] || [ "$build_all" = true ]; then
+    EABIARCH=arm-linux-androideabi
+    ARCH=arm
+    CPU=armv5
+    OPTIMIZE_CFLAGS="-marm -march=$CPU"
+    PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi
+    OUT_LIBRARY=$PREFIX/libffmpeg.so
+    ADDITIONAL_CONFIGURE_FLAG=
+    SONAME=libffmpeg.so
+    # If you want x264, compile armv6
+    find x264/ -name "*.o" -type f -delete
+    build
+    fi
 fi
 
 #x86
@@ -509,37 +515,11 @@ PREFIX=../../VPlayer_library/jni/ffmpeg-build/x86
 OUT_LIBRARY=$PREFIX/libffmpeg.so
 ADDITIONAL_CONFIGURE_FLAG=--disable-asm
 SONAME=libffmpeg.so
-PREBUILT=$NDK/toolchains/x86-$TOOLCHAIN_VER/prebuilt/$OS-x86
-if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
-build_x264
-build_amr
-build_aac
-build_subtitles
-build_ffmpeg
-build_one
+build
 fi
 
-#mips
-if [[ " ${archs[*]} " == *" mips "* ]] || [ "$build_all" = true ]; then
-EABIARCH=mipsel-linux-android
-ARCH=mips
-OPTIMIZE_CFLAGS="-EL -march=mips32 -mips32 -mhard-float"
-PREFIX=../../VPlayer_library/jni/ffmpeg-build/mips
-OUT_LIBRARY=$PREFIX/libffmpeg.so
-ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2"
-SONAME=libffmpeg.so
-PREBUILT=$NDK/toolchains/mipsel-linux-android-$TOOLCHAIN_VER/prebuilt/$OS-x86
-if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
-build_x264
-build_amr
-build_aac
-build_subtitles
-build_ffmpeg
-build_one
-fi
-
-if [[ " ${archs[*]} " == *" armeabi-v7a "* ]] || [ "$build_all" = true ]; then
 #arm v7vfpv3
+if [[ " ${archs[*]} " == *" armeabi-v7a "* ]] || [ "$build_all" = true ]; then
 EABIARCH=arm-linux-androideabi
 ARCH=arm
 CPU=armv7-a
@@ -549,31 +529,14 @@ OUT_LIBRARY=$PREFIX/libffmpeg.so
 ADDITIONAL_CONFIGURE_FLAG=
 SONAME=libffmpeg.so
 EXTRA_LDFLAGS="-Wl,--fix-cortex-a8"
-PREBUILT=$NDK/toolchains/arm-linux-androideabi-$TOOLCHAIN_VER/prebuilt/$OS-x86
-if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
-build_x264
-build_amr
-build_aac
-build_subtitles
-build_ffmpeg
-build_one
+build
 
 #arm v7 + neon (neon also include vfpv3-32)
 EABIARCH=arm-linux-androideabi
-ARCH=arm
-CPU=armv7-a
 OPTIMIZE_CFLAGS="-mfloat-abi=softfp -mfpu=neon -marm -march=$CPU -mtune=cortex-a8 -mthumb -D__thumb__ "
 PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi-v7a-neon
 OUT_LIBRARY=../../VPlayer_library/jni/ffmpeg-build/armeabi-v7a/libffmpeg-neon.so
 ADDITIONAL_CONFIGURE_FLAG=--enable-neon
 SONAME=libffmpeg-neon.so
-EXTRA_LDFLAGS="-Wl,--fix-cortex-a8"
-PREBUILT=$NDK/toolchains/arm-linux-androideabi-$TOOLCHAIN_VER/prebuilt/$OS-x86
-if [ ! -d "$PREBUILT" ]; then PREBUILT="$PREBUILT"_64; fi
-build_x264
-build_amr
-build_aac
-build_subtitles
-build_ffmpeg
-build_one
+build
 fi

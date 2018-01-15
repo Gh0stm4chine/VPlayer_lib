@@ -11,7 +11,7 @@ VPlayer into your project. I provide prebuilt binaries for the project.
 
 ## Changes/Fixes from AndroidFFmpeg
 
-- Able to compile with gcc 4.9+ toolchain and NDK r10e (32 or 64bit)
+- Able to compile with gcc 4.9+ toolchain and NDK r16b (64bit)
 - Updated with the newest versions of each library
 - Super easy way to compile FFmpeg from scratch without hassles
 - Fixes crashing issue when using the same video player for multiple videos (with or without subs)

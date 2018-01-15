@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-APP_ABI := armeabi-v7a armeabi x86 mips
-APP_PLATFORM := android-21
+APP_ABI := armeabi-v7a x86
+APP_PLATFORM := android-27
 APP_OPTIM := release
 
 APP_STL := gnustl_static
