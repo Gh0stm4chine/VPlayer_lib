@@ -146,6 +146,8 @@ while read line; do
 done <"../VPlayer_library/jni/Android.mk"
 
 OS=`uname -s | tr '[A-Z]' '[a-z]'`
+
+# Runs routines to find folders and links once per architecture
 function setup
 {
     # For clang, use standalone toolchain, gcc use the default NDK folder
@@ -175,28 +177,47 @@ function setup
         OPTIMIZE_CFLAGS=$OPTIMIZE_CFLAGS" -isystem $SYSROOT/usr/include/$EABIARCH/ -D__ANDROID_API__=$PLATFORM_VERSION"
     fi
 
-    # Find libgcc to directly link to the compiler for only arm architecture
-    LIBGCC_LINK=
-    if [[ $ARCH == *"arm"* ]]; then
-        LIBGCC_PATH=
-        folders=$PREBUILT/lib/gcc/$EABIARCH/$TOOLCHAIN_VER*
-        for i in $folders; do
-            if [ -f "$i/libgcc.a" ]; then
-                LIBGCC_PATH="$i/libgcc.a"
-                break
-            fi
-        done
-        if [ -z "$LIBGCC_PATH" ]; then
-            echo "Failed: Unable to find libgcc.a from toolchain path, file a bug or look for it"
-            exit 1
+    # Find libgcc.a to merge and link all the libraries
+    LIBGCC_PATH=
+    folders=$PREBUILT/lib/gcc/$EABIARCH/$TOOLCHAIN_VER*
+    for i in $folders; do
+        if [ -f "$i/libgcc.a" ]; then
+            LIBGCC_PATH="$i/libgcc.a"
+            break
         fi
+    done
+    if [ -z "$LIBGCC_PATH" ]; then
+        echo "Failed: Unable to find libgcc.a from toolchain path, file a bug or look for it"
+        exit 1
+    fi
+
+    # Link the GCC library if arm below and including armv7
+    LIBGCC_LINK=
+    if [[ $HOST == *"arm"* ]]; then
         LIBGCC_LINK="-l$LIBGCC_PATH"
     else
         LIBGCC_LINK="-lgcc"
     fi
 
+    # Handle 64bit paths
+    ARCH_BITS=
+    if [[ "$ARCH" == *64 ]]; then
+        ARCH_BITS=64
+    fi
+
+    # Find the library link folder
+    if [ ! -z "$USE_GCC" ]; then
+        LINKER_FOLDER=$PLATFORM/usr/lib
+    else
+        LINKER_FOLDER=$SYSROOT/usr/lib
+    fi
+    if [ -d "$LINKER_FOLDER$ARCH_BITS" ]; then
+        LINKER_FOLDER=$LINKER_FOLDER$ARCH_BITS
+    fi
+
+    LINKER_LIBS=
     CFLAGS=$OPTIMIZE_CFLAGS
-    export LDFLAGS="-lc -lm -ldl -llog -nostdlib $LIBGCC_LINK"
+    export LDFLAGS="-Wl,-rpath-link=$LINKER_FOLDER -L$LINKER_FOLDER -lc -lm -ldl -llog -nostdlib $LIBGCC_LINK"
     export CPPFLAGS="$CFLAGS"
     export CFLAGS="$CFLAGS"
     export CXXFLAGS="$CFLAGS"
@@ -204,12 +225,10 @@ function setup
         export CXX="${CROSS_COMPILE}g++ --sysroot=$SYSROOT"
         export AS="${CROSS_COMPILE}gcc --sysroot=$SYSROOT"
         export CC="${CROSS_COMPILE}gcc --sysroot=$SYSROOT"
-        export LDFLAGS="$LDFLAGS -Wl,-rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib"
     else
         export CXX="clang++"
         export AS="clang"
         export CC="clang"
-        export LDFLAGS="$LDFLAGS -Wl,-rpath-link=$SYSROOT/usr/lib"
     fi
     export NM="${CROSS_COMPILE}nm"
     export STRIP="${CROSS_COMPILE}strip"
@@ -222,8 +241,9 @@ function build_x264
     find x264/ -name "*.o" -type f -delete
     if [ ! -z "$ENABLE_X264" ] && [ "$CPU" != "armv5" ]; then
         ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-gpl --enable-libx264"
+        LINKER_LIBS="$LINKER_LIBS -lx264"
         cd x264
-        ./configure --prefix=$(pwd)/$PREFIX --disable-gpac --host=$ARCH-linux --enable-pic --enable-static $ADDITIONAL_CONFIGURE_FLAG || exit 1
+        ./configure --prefix=$(pwd)/$PREFIX --disable-gpac --host=$HOST --enable-pic --enable-static $ADDITIONAL_CONFIGURE_FLAG || exit 1
         make clean || exit 1
         make STRIP= -j4 install || exit 1
         cd ..
@@ -232,10 +252,12 @@ function build_x264
 
 function build_amr
 {
+    LINKER_LIBS="$LINKER_LIBS -lvo-amrwbenc"
     cd vo-amrwbenc
+    ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-libvo-amrwbenc"
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
         --disable-dependency-tracking \
         --disable-shared \
         --enable-static \
@@ -253,18 +275,20 @@ function build_aac
         echo "Using fdk-aac encoder for AAC"
         find vo-aacenc/ -name "*.o" -type f -delete
         ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-libfdk_aac"
+        LINKER_LIBS="$LINKER_LIBS -lfdk-aac"
         cd fdk-aac
     else
         echo "Using vo-aacenc encoder for AAC"
         find fdk-aac/ -name "*.o" -type f -delete
         ADDITIONAL_CONFIGURE_FLAG="$ADDITIONAL_CONFIGURE_FLAG --enable-libvo-aacenc"
+        LINKER_LIBS="$LINKER_LIBS -lvo-aacenc"
         cd vo-aacenc
     fi
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
         --disable-dependency-tracking \
         --disable-shared \
         --enable-static \
@@ -277,10 +301,11 @@ function build_aac
 }
 function build_png
 {
+    LINKER_LIBS="$LINKER_LIBS -lpng"
     cd libpng
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
         --disable-dependency-tracking \
         --disable-shared \
         --enable-static \
@@ -293,12 +318,14 @@ function build_png
 }
 function build_freetype2
 {
+    LINKER_LIBS="$LINKER_LIBS -lfreetype"
     cd freetype2
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
+        --build=$ARCH-unknown-linux-gnu \
         --disable-dependency-tracking \
         --disable-shared \
         --enable-static \
@@ -312,12 +339,14 @@ function build_freetype2
 }
 function build_ass
 {
+    LINKER_LIBS="$LINKER_LIBS -lass"
+    ADDITIONAL_CONFIGURE_FLAG=$ADDITIONAL_CONFIGURE_FLAG" --enable-libass"
     cd libass
     export PKG_CONFIG_LIBDIR=$(pwd)/$PREFIX/lib/pkgconfig/
     export PKG_CONFIG_PATH=$(pwd)/$PREFIX/lib/pkgconfig/
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
         --disable-fontconfig \
         --disable-dependency-tracking \
         --disable-shared \
@@ -332,10 +361,12 @@ function build_ass
 function build_fribidi
 {
     export PATH=${PATH}:$PREBUILT/bin/
+    LINKER_LIBS="$LINKER_LIBS -lfribidi"
     cd fribidi
     ./configure \
         --prefix=$(pwd)/$PREFIX \
-        --host=$ARCH-linux \
+        --host=$HOST \
+        --build=$ARCH-unknown-linux-gnu \
         --disable-bin \
         --disable-dependency-tracking \
         --disable-shared \
@@ -349,6 +380,7 @@ function build_fribidi
 }
 function build_ffmpeg
 {
+    LINKER_LIBS="$LINKER_LIBS -lavcodec -lavformat -lavresample -lavutil -lswresample -lswscale"
     PKG_CONFIG=${CROSS_COMPILE}pkg-config
     if [ ! -f $PKG_CONFIG ];
     then
@@ -370,13 +402,11 @@ EOF
         --nm=$NM \
         --sysroot=$SYSROOT \
         --extra-libs=$LIBGCC_LINK \
-        --extra-cflags=" -O3 -DANDROID -fpic -DHAVE_SYS_UIO_H=1 -Dipv6mr_interface=ipv6mr_ifindex -fasm -Wno-psabi -fno-short-enums  -fno-strict-aliasing -finline-limit=300 $OPTIMIZE_CFLAGS" \
+        --extra-cflags=" -O3 -DANDROID -fpic -DHAVE_SYS_UIO_H=1 -Dipv6mr_interface=ipv6mr_ifindex -fasm -Wno-psabi -fno-short-enums  -fno-strict-aliasing -finline-limit=300 -I$PREFIX/include $OPTIMIZE_CFLAGS" \
         --disable-shared \
         --enable-static \
         --enable-runtime-cpudetect \
         --extra-ldflags="-Wl,-rpath-link=$SYSROOT/usr/lib -L$SYSROOT/usr/lib  -nostdlib -lc -lm -ldl -llog -L$PREFIX/lib" \
-        --extra-cflags="-I$PREFIX/include" \
-        --enable-libvo-amrwbenc \
         --enable-bsfs \
         --enable-decoders \
         --enable-encoders \
@@ -408,33 +438,11 @@ EOF
 
 function build_one {
     cd ffmpeg
-    export LDFLAGS=$LDFLAGS" -Wl,--allow-multiple-definition"
 
-    # Get all the object files inside FFMPEG
-    FFMPEG_OBJS="libavutil/ libavcodec/ libavcodec/$ARCH/ libavformat/ libswresample/ libswscale/ libavfilter/ compat/ libavutil/$ARCH/"
-    case $ARCH in
-        arm)
-            FFMPEG_OBJS=$FFMPEG_OBJS" libswresample/arm/ libavcodec/neon/"
-        ;;
-        x86)
-            FFMPEG_OBJS=$FFMPEG_OBJS" libswresample/x86/ libswscale/x86/ libavfilter/x86/"
-        ;;
-        # Default works with mips
-    esac
-
-    # Check each FFMPEG object path if they exist before adding them to the list
-    OBJS=
-    for path in $FFMPEG_OBJS; do
-        objs_path=$path"*.o"
-        if [ `ls -1 $objs_path 2>/dev/null | wc -l` -gt "0" ]; then
-            OBJS=$OBJS" "$objs_path
-        fi
-    done
-
-    # Finally package into shared library
-    rm -f libavcodec/inverse.o ../vo-aacenc/common/cmnMemory.o
-    $CC -o $OUT_LIBRARY -shared -nostdlib -Wl,-z,noexecstack -Bsymbolic $LDFLAGS $EXTRA_LDFLAGS $OBJS \
-          $(find ../ -name "*.o" -not -path "../ffmpeg/*" | tr '\n' ' ')
+    # Link all libraries into one shared object
+    ${LD} -rpath-link=$LINKER_FOLDER -L$LINKER_FOLDER -L$PREFIX/lib -soname $SONAME -shared -nostdlib -Bsymbolic \
+    --whole-archive --no-undefined -o $OUT_LIBRARY $LINKER_LIBS -lc -lm -lz -ldl -llog   \
+    --dynamic-linker=/system/bin/linker -zmuldefs $LIBGCC_PATH || exit 1
     $PREBUILT/bin/$EABIARCH-strip --strip-unneeded $OUT_LIBRARY
     cd ..
 }
@@ -445,13 +453,6 @@ function build_subtitles
         build_png
         build_freetype2
         build_ass
-        ADDITIONAL_CONFIGURE_FLAG=$ADDITIONAL_CONFIGURE_FLAG" --enable-libass"
-    else
-        # Delete object files so they don't get included when building shared library
-        find fribidi/ -name "*.o" -type f -delete
-        find libpng/ -name "*.o" -type f -delete
-        find freetype2/ -name "*.o" -type f -delete
-        find libass/ -name "*.o" -type f -delete
     fi
 }
 function build
@@ -467,6 +468,9 @@ function build
         $NDK/build/tools/make_standalone_toolchain.py --arch "$ARCH" --api $PLATFORM_VERSION --stl=libc++ --install-dir $TOOLCHAIN_ROOT --force
         echo "      Built the standalone toolchain"
     fi
+    if [ -z "$HOST" ]; then
+        HOST=$ARCH-linux
+    fi
     setup
     build_x264
     build_amr
@@ -474,6 +478,8 @@ function build
     build_subtitles
     build_ffmpeg
     build_one
+    echo "Successfully built $ARCH"
+    HOST=
 }
 
 # Deprecated architectures only compilable with GCC (which is also deprecated)
@@ -485,7 +491,7 @@ if [ ! -z "$USE_GCC" ]; then
     OPTIMIZE_CFLAGS="-EL -march=mips32 -mips32 -mhard-float"
     PREFIX=../../VPlayer_library/jni/ffmpeg-build/mips
     OUT_LIBRARY=$PREFIX/libffmpeg.so
-    ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2"
+    ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2 --disable-asm"
     SONAME=libffmpeg.so
     build
     fi
@@ -518,6 +524,32 @@ SONAME=libffmpeg.so
 build
 fi
 
+#x86_64
+if [[ " ${archs[*]} " == *" x86_64 "* ]] || [ "$build_all" = true ]; then
+ARCH=x86_64
+EABIARCH=$ARCH-linux-android
+OPTIMIZE_CFLAGS="-m64"
+PREFIX=../../VPlayer_library/jni/ffmpeg-build/$ARCH
+OUT_LIBRARY=$PREFIX/libffmpeg.so
+ADDITIONAL_CONFIGURE_FLAG=--disable-asm
+SONAME=libffmpeg.so
+build
+fi
+
+#arm64-v8a
+if [[ " ${archs[*]} " == *" arm64-v8a "* ]] || [ "$build_all" = true ]; then
+CPU=arm64
+ARCH=$CPU
+HOST=aarch64-linux
+EABIARCH=$HOST-android
+OPTIMIZE_CFLAGS=
+PREFIX=../../VPlayer_library/jni/ffmpeg-build/arm64-v8a
+OUT_LIBRARY=$PREFIX/libffmpeg.so
+ADDITIONAL_CONFIGURE_FLAG=--enable-neon
+SONAME=libffmpeg-neon.so
+build
+fi
+
 #arm v7vfpv3
 if [[ " ${archs[*]} " == *" armeabi-v7a "* ]] || [ "$build_all" = true ]; then
 EABIARCH=arm-linux-androideabi
@@ -528,7 +560,6 @@ PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi-v7a
 OUT_LIBRARY=$PREFIX/libffmpeg.so
 ADDITIONAL_CONFIGURE_FLAG=
 SONAME=libffmpeg.so
-EXTRA_LDFLAGS="-Wl,--fix-cortex-a8"
 build
 
 #arm v7 + neon (neon also include vfpv3-32)

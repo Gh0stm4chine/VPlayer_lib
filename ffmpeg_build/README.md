@@ -2,7 +2,7 @@ This page describes how to compile FFmpeg using NDK for Android. This is a more 
 
 This is **not a mandatory step** to integrate a basic video player into your application, to integrate **without compiling FFmpeg**, go [here](https://github.com/matthewn4444/VPlayer_lib/wiki/Compiling-VPlayer#building-vplayer-with-ffmpeg-binaries). However if you want to reduce the binary size or limit the codecs etc, this is will be useful.
 
-Clang compiler is used by default and will only build arm (v7+) and x86 architecture. mips and armv5 are depreciated by Android and can only be built with GCC. More info to build GCC is below.
+Clang compiler is used by default and will only build arm (v7+) and x86 architecture and their respected 64 bit variants. mips and armv5 are depreciated by Android and can only be built with GCC. More info to build GCC is below.
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ _*Note: If you want to speed up the build process, limit the architectures and/o
    - Modify **APP_PLATFORM** for which platform to build with (if you use a higher number, it will choose the next lower version; e.g you choose _android-10_, it will choose _android-9_ if 10 doesn't exist)
 
 3. **[Optional]** Modify **build_android.sh** if you like to build with GCC, by default clang will build without any modifications. GCC is depreciated
-and replaced by clang. Note that clang will not build depreciated architectures such as armv5 and mips (and 64bit mips). Note that GCC armv7 neon might not work with NDK above 10e, maybe NDK17 will be fixed.
+and replaced by clang. Note that clang will not build depreciated architectures such as armv5 and mips (and 64bit mips).
 
 2. Go into the folder **{root]/ffmpeg_build** and run **config_and_build.sh** once.
    - This will build with the newest toolchain from your NDK folder. If you want to use a specific version, modify it in the _android_android.sh_ file
