@@ -18,10 +18,12 @@ You need the following tools:
 - pkg-config
 - git
 - libtool
+- yasm (for libjpeg turbo x86)
+- nasm (for libjpeg turbo x86)
 
 **Command (Debian/Ubuntu):**
 
-``sudo apt-get install autoconf autoconf-archive automake pkg-config git libtool``
+``sudo apt-get install autoconf autoconf-archive automake pkg-config git libtool yasm nasm``
 
 For mac: you have to install xcode and command tools from xcode preferences (tool brew from homebrew project)
 

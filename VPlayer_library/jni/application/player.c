@@ -28,8 +28,10 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/time.h>
 
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 
 //#include <libavcodec/opt.h>
 #include <libavcodec/avfft.h>
@@ -779,9 +781,15 @@ enum WaitFuncRet player_wait_for_frame(struct Player *player, int64_t stream_tim
 			// and check everything again
 			sleep_time = 500000ll;
 		}
-
+#if __LP64__
+        struct timespec time_to_wait = {0, 0};
+        time_to_wait.tv_sec = time(NULL) + sleep_time/1000ll;
+        int timeout_ret = pthread_cond_timedwait(&player->cond_queue,
+                &player->mutex_queue, &time_to_wait);
+#else
 		int timeout_ret = pthread_cond_timeout_np(&player->cond_queue,
 				&player->mutex_queue, sleep_time/1000ll);
+#endif
 		if (timeout_ret == ETIMEDOUT) {
 			// nothing special probably it is time ready to display
 			// but for sure check everything again
@@ -1058,7 +1066,7 @@ void * player_decode(void * data) {
 	char thread_title[256];
 	sprintf(thread_title, "FFmpegDecode[%d]", stream_no);
 
-	JavaVMAttachArgs thread_spec = { JNI_VERSION_1_4, thread_title, NULL };
+	JavaVMAttachArgs thread_spec = { JNI_VERSION_1_6, thread_title, NULL };
 
 	jint ret = (*player->get_javavm)->AttachCurrentThread(player->get_javavm,
 			&env, &thread_spec);
@@ -1249,7 +1257,7 @@ void * player_read_from_stream(void *data) {
 	struct PacketData *packet_data;
 	int to_write;
 	int interrupt_ret;
-	JavaVMAttachArgs thread_spec = { JNI_VERSION_1_4, "FFmpegReadFromStream",
+	JavaVMAttachArgs thread_spec = { JNI_VERSION_1_6, "FFmpegReadFromStream",
 			NULL };
 
 	jint ret = (*player->get_javavm)->AttachCurrentThread(player->get_javavm,
@@ -1527,7 +1535,7 @@ struct Player * player_get_player_field(JNIEnv *env, jobject thiz) {
 
 	jfieldID m_native_layer_field = java_get_field(env, player_class_path_name,
 			player_m_native_player);
-	struct Player * player = (struct Player *) (*env)->GetIntField(env, thiz,
+	struct Player * player = (struct Player *) (*env)->GetLongField(env, thiz,
 			m_native_layer_field);
 	return player;
 }
@@ -1792,7 +1800,7 @@ int player_print_report_video_streams(JNIEnv* env, jobject thiz,
 
 	if (err == ERROR_NO_ERROR) {
 		(*env)->CallVoidMethod(env, thiz, player->player_set_stream_info_method,
-				array);
+                               array);
 	}
 
 	(*env)->DeleteLocalRef(env, array);
@@ -2071,7 +2079,7 @@ int player_start_decoding_threads(struct Player *player) {
 		goto end;
 	}
 	for (i = 0; i < player->caputre_streams_no; ++i) {
-		struct DecoderData * decoder_data = malloc(sizeof(decoder_data));
+		struct DecoderData * decoder_data = malloc(sizeof(struct DecoderData));
 		*decoder_data = (struct DecoderData) {player: player, stream_no: i};
 		ret = pthread_create(&player->decode_threads[i], &attr, player_decode,
 				decoder_data);
@@ -2780,8 +2788,8 @@ int jni_player_init(JNIEnv *env, jobject thiz) {
 			goto free_player;
 		}
 
-		(*env)->SetIntField(env, thiz, player_m_native_player_field,
-				(jint) player);
+		(*env)->SetLongField(env, thiz, player_m_native_player_field,
+				(jlong) player);
 
 		player->player_prepare_frame_method = java_get_method(env, player_class,
 				player_prepare_frame);

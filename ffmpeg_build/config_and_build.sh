@@ -9,8 +9,13 @@ function addAutomakeOpts() {
 }
 
 cd ..
-git submodule update --init --recursive
+#git submodule update --init --recursive
 cd ffmpeg_build
+
+# Configure libjpeg
+cd libjpeg-turbo
+autoreconf -fiv
+cd ..
 
 # configure the environment
 cd libpng

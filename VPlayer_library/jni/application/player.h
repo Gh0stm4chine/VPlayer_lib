@@ -93,7 +93,7 @@ static const struct {
 
 // VPlayerController
 static char *player_class_path_name = JAVA_PACKAGE_PATH"/VPlayerController";
-static JavaField player_m_native_player = {"mNativePlayer", "I"};
+static JavaField player_m_native_player = {"mNativePlayer", "J"};
 static JavaMethod player_on_update_time = {"onUpdateTime","(JJZ)V"};
 static JavaMethod player_prepare_audio_track = {"prepareAudioTrack", "(II)Landroid/media/AudioTrack;"};
 static JavaMethod player_prepare_frame = {"prepareFrame", "(II)Landroid/graphics/Bitmap;"};

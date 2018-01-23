@@ -6,6 +6,7 @@
 # Built application files
 build/
 obj/
+.externalNativeBuild/
 
 # Crashlytics configuations
 com_crashlytics_export_strings.xml

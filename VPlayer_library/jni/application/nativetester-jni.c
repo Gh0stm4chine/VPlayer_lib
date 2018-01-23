@@ -61,7 +61,7 @@ jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
 	JNIEnv* env = NULL;
 	jint result = -1;
 
-	if ((*vm)->GetEnv(vm, (void**) &env, JNI_VERSION_1_4) != JNI_OK) {
+	if ((*vm)->GetEnv(vm, (void**) &env, JNI_VERSION_1_6) != JNI_OK) {
 		LOGE(1, "ERROR: GetEnv failed\n");
 		goto bail;
 	}
@@ -76,7 +76,7 @@ jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
 	}
 
 	/* success -- return valid version number */
-	result = JNI_VERSION_1_4;
+	result = JNI_VERSION_1_6;
 
 bail:
 	return result;

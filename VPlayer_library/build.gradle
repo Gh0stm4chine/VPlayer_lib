@@ -1,55 +1,32 @@
-import org.apache.tools.ant.taskdefs.condition.Os
-
 apply plugin: 'com.android.library'
 
 dependencies {
-    compile fileTree(dir: 'libs', include: '*.jar')
-}
-
-def getNdkDir() {
-    if (System.env.ANDROID_NDK_ROOT != null)
-        return System.env.ANDROID_NDK_ROOT
-
-    Properties properties = new Properties()
-    properties.load(project.rootProject.file('local.properties').newDataInputStream())
-    def ndkdir = properties.getProperty('ndk.dir', null)
-    if (ndkdir == null)
-        throw new GradleException("NDK location not found. Define location with ndk.dir in the local.properties file or with an ANDROID_NDK_ROOT environment variable.")
-
-    return ndkdir
-}
-
-def getNdkBuildCmd() {
-    def ndkbuild = getNdkDir() + "/ndk-build"
-    if (Os.isFamily(Os.FAMILY_WINDOWS))
-        ndkbuild += ".cmd"
-
-    return ndkbuild
+    implementation fileTree(dir: 'libs', include: '*.jar')
 }
 
 android {
-    compileSdkVersion 16
-    buildToolsVersion "22.0.1"
+    compileSdkVersion 22
+    buildToolsVersion '26.0.2'
+    defaultConfig {
+        minSdkVersion 8
+        targetSdkVersion 22
+        versionCode 1
+        versionName "1.0"
 
-    task ndkBuild(type: Exec) {
-        workingDir file('.')
-        commandLine getNdkBuildCmd()
+        externalNativeBuild {
+            ndkBuild {
+                targets "nativetester-jni", "ffmpeg-jni", "cpufeatures", "yuv_static", "ffmpeg-jni-neon"
+                arguments "-Wno-invalid-source-encoding -j4"
+            }
+        }
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'//, 'mips', 'armeabi'
+        }
     }
-
-    tasks.withType(JavaCompile) {
-        compileTask -> compileTask.dependsOn ndkBuild
-    }
-
-    task cleanNative(type: Exec) {
-        workingDir file('.')
-        commandLine getNdkBuildCmd(), 'clean'
-    }
-
-    clean.dependsOn cleanNative
-
     sourceSets {
         main {
             manifest.srcFile 'AndroidManifest.xml'
+            jniLibs.srcDir 'jni/dist'
             java.srcDirs = ['src']
             resources.srcDirs = ['src']
             aidl.srcDirs = ['src']
@@ -66,7 +43,96 @@ android {
         debug.setRoot('build-types/debug')
         release.setRoot('build-types/release')
     }
+    externalNativeBuild {
+        ndkBuild {
+            path 'jni/Android.mk'
+        }
+    }
+}
 
-    sourceSets.main.jni.srcDirs = [] // disable automatic ndk-build call, which ignore our Android.mk
-    sourceSets.main.jniLibs.srcDir 'libs'
+def copyFileIfNotExists(src, dstFolder) {
+    def srcFile = new File(src)
+    if (!srcFile.exists()) {
+        return false
+    }
+    def file = new File(dstFolder + '/' + srcFile.name)
+    if (!file.exists()) {
+        copy {
+            from src
+            into dstFolder
+        }
+        return true
+    }
+    return false
+}
+
+def deleteOtherArchFromFolder(config, path) {
+    new File(path).listFiles().each { folder ->
+        if (!config.ndk.abiFilters.contains(folder.name)) {
+            delete {
+                delete folder
+            }
+        }
+    }
+}
+
+task prebuildTask() {
+    doLast {
+        // TODO support multiple flavors if used in the future
+        def config = android.defaultConfig
+
+        def here = project.buildscript.sourceFile.parentFile.absolutePath
+        def destRoot = here + '/jni/dist'
+
+        // Delete the arch that are not in this build from the dist folder
+        deleteOtherArchFromFolder(config, destRoot)
+
+        // Also delete the obj files in build directory
+        android.buildTypes.all { type ->
+            deleteOtherArchFromFolder(config, project.buildDir.absolutePath
+                    + '/intermediates/ndkBuild/' + type.name + '/obj/local')
+        }
+
+        // Copy all the binaries that are not already there
+        config.ndk.abiFilters.each { abi ->
+            def destFolder = destRoot + '/' + abi + '/'
+            def folder = new File(destFolder)
+            if (!folder.exists()) {
+                folder.mkdirs()
+            }
+            def dir = here + '/jni/ffmpeg-build/' + abi
+            if (copyFileIfNotExists(dir + '/libffmpeg.so', destFolder)) {
+                println 'Copied libffmpeg.so (FFMPEG binary) for ' + abi
+            }
+
+            // Neon support only for arm v7
+            if (abi == "armeabi-v7a" && copyFileIfNotExists(dir + '/libffmpeg-neon.so', destFolder)) {
+                println 'Copied libffmpeg-neon.so (FFMPEG binary) for ' + abi
+            }
+        }
+    }
+}
+preBuild.dependsOn(prebuildTask)
+
+task deleteDummySharedLibraries {
+    doLast {
+        def config = android.defaultConfig
+
+        // Loop through each build type and abi and delete neon if not needed or not armv7
+        android.buildTypes.all { type ->
+            def dir = project.buildDir.absolutePath + '/intermediates/ndkBuild/' + type.name + '/obj/local/'
+            config.ndk.abiFilters.each { abi ->
+                if (abi != "armeabi-v7a") {
+                    delete {
+                        delete dir + abi + "/libffmpeg-jni-neon.so"
+                    }
+                }
+            }
+        }
+    }
+}
+tasks.whenTaskAdded { task ->
+    if (task.name == "mergeDebugJniLibFolders") {
+        task.dependsOn deleteDummySharedLibraries
+    }
 }

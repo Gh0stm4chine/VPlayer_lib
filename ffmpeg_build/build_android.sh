@@ -23,7 +23,7 @@
 #
 #   Building with x264
 #       Will not work for armv5
-ENABLE_X264=yes
+#ENABLE_X264=yes
 
 #   Toolchain version
 #       Comment out if you want default or specify a version
@@ -46,6 +46,12 @@ ENABLE_X264=yes
 #   Specify Toolchain root
 #       https://developer.android.com/ndk/guides/standalone_toolchain.html#creating_the_toolchain
 TOOLCHAIN_ROOT=/tmp/android-toolchain/
+
+#   Include libjpeg-turbo in build
+#       Jpeg is only needed for the application not shared library for libyuv,
+#       If you need libjpeg-turbo inside the shared library then uncomment.
+#       It is not included to save space in the binary.
+#INCLUDE_JPEG=yes
 
 #
 # =======================================================================
@@ -299,6 +305,26 @@ function build_aac
     make -j4 install || exit 1
     cd ..
 }
+function build_jpeg
+{
+    if [ ! -z "$INCLUDE_JPEG" ]; then
+        LINKER_LIBS="$LINKER_LIBS -ljpeg"
+    fi
+    cd libjpeg-turbo
+    ./configure \
+        --prefix=$(pwd)/$PREFIX \
+        --host=$HOST \
+        --build=$ARCH-unknown-linux-gnu \
+        --disable-dependency-tracking \
+        --disable-shared \
+        --enable-static \
+        --with-pic \
+        $ADDITIONAL_CONFIGURE_FLAG \
+        || exit 1
+    make clean || exit 1
+    make -j4 install || exit 1
+    cd ..
+}
 function build_png
 {
     LINKER_LIBS="$LINKER_LIBS -lpng"
@@ -306,6 +332,7 @@ function build_png
     ./configure \
         --prefix=$(pwd)/$PREFIX \
         --host=$HOST \
+        --build=$ARCH-unknown-linux-gnu \
         --disable-dependency-tracking \
         --disable-shared \
         --enable-static \
@@ -451,6 +478,7 @@ function build_subtitles
     if [ ! -z "$BUILD_WITH_SUBS" ]; then
         build_fribidi
         build_png
+        build_jpeg
         build_freetype2
         build_ass
     fi
@@ -481,6 +509,12 @@ function build
     echo "Successfully built $ARCH"
     HOST=
 }
+
+# Delete the distributed folder in library
+if [ -d "../VPlayer_library/jni/dist" ]; then
+    echo "Deleting old binaries from dist folder in library"
+    rm -rf ../VPlayer_library/jni/dist
+fi
 
 # Deprecated architectures only compilable with GCC (which is also deprecated)
 if [ ! -z "$USE_GCC" ]; then

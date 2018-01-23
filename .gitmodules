@@ -30,4 +30,7 @@
 	url = https://github.com/mstorsjo/fdk-aac.git
 [submodule "VPlayer_library/jni/libyuv"]
 	path = VPlayer_library/jni/libyuv
-	url = https://chromium.googlesource.com/external/libyuv
+	url = https://chromium.googlesource.com/libyuv/libyuv
+[submodule "ffmpeg_build/libjpeg-turbo"]
+	path = ffmpeg_build/libjpeg-turbo
+	url = https://github.com/libjpeg-turbo/libjpeg-turbo.git

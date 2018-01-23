@@ -1,4 +1,4 @@
-# Application.mk
+# Android.mk
 # Copyright (c) 2012 Jacek Marchwicki
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +21,9 @@ include $(CLEAR_VARS)
 #   Presets - comment out what you don't need
 #
 #           If you comment out FEATURE_NEON, you need to remove System.LoadLibrary
-#           from the java code in VPlayerController.java
+#           from the java code in VPlayerController.java. Also you may want to remove
+#           libffmpeg-neon.so copying code in build.gradle, sorry gradle makes it too
+#           complicated to merge settings
 FEATURE_NEON:=yes
 #LIBRARY_PROFILER:=yes
 SUBTITLES:=yes
@@ -36,13 +38,14 @@ ifeq ($(TARGET_ARCH_ABI), armeabi-v7a)
     ifdef FEATURE_NEON
         # add neon optimization code (only armeabi-v7a)
         FEATURE_NEON:=yes
+        LOCAL_ARM_NEON := true
     endif
 else
     FEATURE_NEON:=
 endif
 
 #if armeabi or armeabi-v7a
-ifeq ($(TARGET_ARCH_ABI),$(filter $(TARGET_ARCH_ABI),armeabi armeabi-v7a))
+ifeq ($(TARGET_ARCH_ABI),$(filter $(TARGET_ARCH_ABI),armeabi armeabi-v7a arm64-v8a))
     ifdef LIBRARY_PROFILER
         # add profiler (only arm)
         LIBRARY_PROFILER:=yes
@@ -58,6 +61,14 @@ LOCAL_EXPORT_C_INCLUDES := ffmpeg-build/$(TARGET_ARCH_ABI)/include
 LOCAL_EXPORT_LDLIBS := ffmpeg-build/$(TARGET_ARCH_ABI)/libffmpeg.so
 LOCAL_PRELINK_MODULE := true
 include $(PREBUILT_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := libjpeg
+LOCAL_SRC_FILES := $(LOCAL_PATH)/ffmpeg-build/$(TARGET_ARCH_ABI)/lib/libjpeg.a
+LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/libjpeg-turbo
+LOCAL_EXPORT_LDLIBS := $(LOCAL_SRC_FILES)
+LOCAL_PRELINK_MODULE := true
+include $(PREBUILT_STATIC_LIBRARY)
 
 #../../ffmpeg_build/ffmpeg
 
@@ -152,6 +163,11 @@ endif
 LOCAL_LDLIBS    += -landroid
 LOCAL_LDLIBS += -llog -ljnigraphics -lz -lm -g $(LOCAL_PATH)/ffmpeg-build/$(TARGET_ARCH_ABI)/libffmpeg-neon.so
 include $(BUILD_SHARED_LIBRARY)
+else
+include $(CLEAR_VARS)
+LOCAL_MODULE := ffmpeg-jni-neon
+LOCAL_ALLOW_UNDEFINED_SYMBOLS=false
+include $(BUILD_SHARED_LIBRARY)
 endif
 
 #nativetester-jni library
@@ -182,4 +198,4 @@ include $(LOCAL_PATH)/android-ndk-profiler-3.1/android-ndk-profiler.mk
 endif
 
 include $(call all-makefiles-under,$(LOCAL_PATH))
-$(call import-module,cpufeatures)
+$(call import-module,android/cpufeatures)

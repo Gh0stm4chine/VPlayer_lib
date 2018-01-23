@@ -18,8 +18,6 @@
 
 package com.vplayer;
 
-import java.util.Map;
-
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.media.AudioFormat;
@@ -30,6 +28,8 @@ import android.view.Surface;
 
 import com.vplayer.exception.NotPlayingException;
 import com.vplayer.exception.VPlayerException;
+
+import java.util.Map;
 
 class VPlayerController {
     private static class StopTask extends AsyncTask<Void, Void, Void> {
@@ -78,9 +78,9 @@ class VPlayerController {
             Integer audioStream = (Integer) params[3];
             Integer subtitleStream = (Integer) params[4];
 
-            int videoStreamNo = videoStream == null ? -1 : videoStream.intValue();
-            int audioStreamNo = audioStream == null ? -1 : audioStream.intValue();
-            int subtitleStreamNo = subtitleStream == null ? -1 : subtitleStream.intValue();
+            int videoStreamNo = videoStream == null ? -1 : videoStream;
+            int audioStreamNo = audioStream == null ? -1 : audioStream;
+            int subtitleStreamNo = subtitleStream == null ? -1 : subtitleStream;
 
             int err = player.setDataSourceNative(url, map, videoStreamNo, audioStreamNo, subtitleStreamNo);
             SetDataSourceTaskResult result = new SetDataSourceTaskResult();
@@ -206,7 +206,7 @@ class VPlayerController {
     private VPlayerListener mpegListener = null;
     private final RenderedFrame mRenderedFrame = new RenderedFrame();
 
-    private int mNativePlayer;
+    private long mNativePlayer;
     private final Activity activity;
 
     private int mVideoWidth = 0;
@@ -255,15 +255,15 @@ class VPlayerController {
         super.finalize();
     }
 
-    private native int initNative();
+    native int initNative();
 
-    private native void deallocNative();
+    native void deallocNative();
 
-    private native int setDataSourceNative(String url,
+    native int setDataSourceNative(String url,
             Map<String, String> dictionary, int videoStreamNo,
             int audioStreamNo, int subtitleStreamNo);
 
-    private native void stopNative();
+    native void stopNative();
 
     native void renderFrameStart();
 
@@ -273,9 +273,9 @@ class VPlayerController {
 
     native void renderLastNativeFrame();
 
-    private native void seekNative(long positionUs) throws NotPlayingException;
+    native void seekNative(long positionUs) throws NotPlayingException;
 
-    private native long getVideoDurationNative();
+    native long getVideoDurationNative();
 
     public native void render(Surface surface);
 
@@ -406,11 +406,11 @@ class VPlayerController {
         setDataSource(url, null, UNKNOWN_STREAM, UNKNOWN_STREAM, NO_STREAM);
     }
 
-    public void setDataSource(String url, Map<String, String> dictionary,
-            int videoStream, int audioStream, int subtitlesStream) {
-        new SetDataSourceTask(this).execute(url, dictionary,
-                Integer.valueOf(videoStream), Integer.valueOf(audioStream),
-                Integer.valueOf(subtitlesStream));
+    public void setDataSource(final String url, final Map<String, String> dictionary,
+                              final int videoStream, final int audioStream, final int subtitlesStream) {
+        new SetDataSourceTask(VPlayerController.this).execute(url, dictionary,
+                videoStream, audioStream,
+                subtitlesStream);
     }
 
     public VPlayerListener getMpegListener() {

@@ -35,7 +35,7 @@ static int jni_read(URLContext *h, unsigned char *buf, int size) {
 	jobject jni_reader;
 	jbyteArray byte_array;
 	jbyte *jni_samples;
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
@@ -80,7 +80,7 @@ static int jni_write(URLContext *h, const unsigned char *buf, int size) {
 	jobject jni_reader;
 	jbyteArray byte_array;
 	jbyte *jni_samples;
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
@@ -128,7 +128,7 @@ static int jni_check(URLContext *h, int mask) {
 	jmethodID jni_reader_check;
 	jobject jni_reader;
 
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
@@ -166,7 +166,7 @@ static int jni_open2(URLContext *h, const char *url, int flags,
 	jstring url_java_string;
 	jobject jni_reader;
 
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
@@ -230,7 +230,7 @@ static int64_t jni_seek(URLContext *h, int64_t pos, int whence) {
 	jmethodID jni_reader_seek;
 	jobject jni_reader;
 
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
@@ -264,7 +264,7 @@ static int jni_close(URLContext *h) {
 	JNIEnv* env;
 	jobject jni_reader;
 
-	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_4)) {
+	if ((*global_jvm)->GetEnv(global_jvm, (void**) &env, JNI_VERSION_1_6)) {
 		err = -1;
 		goto end;
 	}
