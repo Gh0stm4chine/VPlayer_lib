@@ -9,7 +9,7 @@ function addAutomakeOpts() {
 }
 
 cd ..
-#git submodule update --init --recursive
+git submodule update --init --recursive
 cd ffmpeg_build
 
 # Configure libjpeg
@@ -55,5 +55,5 @@ sh ./autogen.sh
 cd ..
 
 # Start the build!
-source build_android.sh
+source build_android.sh "$@"
 

@@ -1,5 +1,5 @@
 # Application.mk
-# Copyright (c) 2012 Jacek Marchwicki
+# Copyright (c) 2018 Matthew Ng
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#armeabi and mips are supported but depreciated
-APP_ABI := armeabi-v7a x86 x86_64 arm64-v8a
-APP_PLATFORM := android-27
 APP_OPTIM := release
-
-APP_STL := gnustl_static

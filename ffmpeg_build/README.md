@@ -42,11 +42,12 @@ Clone the project:
 
 _*Note: If you want to speed up the build process, limit the architectures and/or lessen the codecs.*_
 
-1. Set the path to NDK: ``export NDK=~/<path to NDK>/NDK`` (you can store it in your ~/.bashrc file if you want)
+1. Set the path to NDK: ``export NDK=~/<path to NDK>/NDK`` (you can store it in your ~/.bashrc file if you want) or use ``--ndk=<path>`` with *build_android.sh*
 
-2. Go into the folder **{root}/VPlayer_library/jni** and edit **Application.mk**:
-   - Modify **APP_ABI** for which architectures to build for (armeabi, armeabi-v7a, x86, or mips)
-   - Modify **APP_PLATFORM** for which platform to build with (if you use a higher number, it will choose the next lower version; e.g you choose _android-10_, it will choose _android-9_ if 10 doesn't exist)
+2. Go into the folder **{root}/VPlayer_library** and edit **build.gradle**:
+   - Modify the first line of **compileSdkVersion** for which platform to build with (if you use a higher number, it will choose the next lower version; e.g you choose _android-10_, it will choose _android-9_ if 10 doesn't exist)
+   - Modify the first line of **abiFilters** for which architectures to build for (armeabi, armeabi-v7a, arm64_6-v8a x86, x86_64 or mips)
+   - Modify the first line of **arguments** (under externalNativeBuild -> ndkBuild) for *-j#* to specify number of jobs to build with
 
 3. **[Optional]** Modify **build_android.sh** if you like to build with GCC, by default clang will build without any modifications. GCC is depreciated
 and replaced by clang. Note that clang will not build depreciated architectures such as armv5 and mips (and 64bit mips).
@@ -62,9 +63,41 @@ and replaced by clang. Note that clang will not build depreciated architectures 
 
 Edit the file **{root}/ffmpeg_build/build_android.sh** under _function build_ffmpeg_
 
+## Build Script Command Line
+
+Both *build_android.sh* and *config_and_build.sh* now support command line argument interface. To see what the options are you can use
+
+ ``build_android.sh --help``
+
+``--ndk=<directory>``
+If you do not want to export and environment variable for NDK, you can use this optional argument
+
+``-j#``
+Set the number of jobs. By default it will be 4 unless specified in build.gradle under the first arguments line in the file.
+
+``-p=# or --platform=#``
+Specify the platform SDK. By default is 9 unless specified in build.gradle under *compileSdkVersion*.
+
+``-a=<list> or --arch=<list>``
+Specify list of architectures used (mips, armeabi (both deprecated), arm64-v8a, x86, x86_64, armeabi-v7a). By default it will read from build.gradle first line that has *abiFilters*.
+
+You can also use 2 special commands ``-a=all`` which will build everything with clang (except deprecated) and ``-a=all_with_deprecated`` to also build mips and armeabi with gcc.
+
+``--gcc``
+Compile all the architectures specified with gcc.
+
+``--use-h264``
+Will build and include h264 encoding in the shared library.
+
+``--use-fdk-aac``
+Will build and include fdk aac in the shared library.
+
+``--no-subs``
+Will not build or include subs in the shared library. By default it will build subs.
+
 ### Customize Architectures
 
-Go to **{root}/VPlayer_library/jni/Application.mk** and modify which architectures to change. _armeabi-v7a_ will build with neon. All will work too but it might fail later when building the apk because I did not add 64bit support yet. Each build will take a long time so try to reduce your architecture list.
+Go to **{root}/VPlayer_library/build.gradle** and modify which architectures to change. _armeabi-v7a_ will build with neon. Each build will take a long time so try to reduce your architecture list. Try to increase the number of jobs that suits your pc to increase compile times.
 
 ### Customize Codecs
 
@@ -74,7 +107,7 @@ Starting from line 316 lists a bunch of configurations for FFmpeg. After **--dis
 
 To reduce the file size of _libffmpeg.so_ you can build without subtitles if you don't need them.
 
-Go to **{root}/VPlayer_library/jni/Application.mk** and comment out ``SUBTITLES=yes`` and it will not compile with subtitles. Likewise, uncomment the line to allow subtitles. You will save about 1-2mb off the shared library. Deciding to compile the NDK application with subtitles will lead to build errors when not compiling FFmpeg with subtitles.
+Go to **{root}/VPlayer_library/jni/Android.mk** and comment out ``SUBTITLES=yes`` and it will not compile with subtitles. Likewise, uncomment the line to allow subtitles. You will save about 1-2mb off the shared library. Deciding to compile the NDK application with subtitles will lead to build errors when not compiling FFmpeg with subtitles. Use can also use the command line ``--no-subs`` to not compile and include subtitles.
 
 ### Customize Toolchain Version
 
@@ -82,7 +115,7 @@ Edit **{root}/ffmpeg_build/build_android.sh** by uncommenting ``TOOLCHAIN_VER=4.
 
 ### Build with GCC instead of Clang
 
-By default clang will be used because GCC is depreciated. Edit **{root}/ffmpeg_build/build_android.sh** by uncommenting ``USE_GCC=yes``
+By default clang will be used because GCC is depreciated. Edit **{root}/ffmpeg_build/build_android.sh** by uncommenting ``USE_GCC=yes`` or use command line with ``--gcc``.
 
 ### Clang use specific location for standalone toolchain
 
@@ -90,13 +123,13 @@ By default standalone toolchain (only for clang) will be placed into ``/tmp/andr
 
 ### Customize to use x264
 
-If you do not need _libx264_ then edit **{root}/ffmpeg_build/build_android.sh** and comment ``ENABLE_X264=yes``.
+If you do not need _libx264_ then edit **{root}/ffmpeg_build/build_android.sh** and comment ``ENABLE_X264=yes`` or use command line with ``--use-h264``.
 
 ### Customize AAC
 
 You can either use vo-aacenc or fdk-aac. fdk-aac is the superior encoder however because of licensing, the prebuilt libraries I posted will not have them available, you will need to build FFmpeg yourself (luckily it is built by default).
 
-Edit **{root}/ffmpeg_build/build_android.sh** by commenting ``PREFER_FDK_AAC=yes`` to use **vo-aacenc** or leave it uncommented to use **fdk-aac**.
+Edit **{root}/ffmpeg_build/build_android.sh** by commenting ``PREFER_FDK_AAC=yes`` to use **vo-aacenc** or leave it uncommented to use **fdk-aac** or use command line ``--use-fdk-acc`` when running the script.
 
 ## Extra Stuff
 

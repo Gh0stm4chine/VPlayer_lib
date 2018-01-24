@@ -56,43 +56,153 @@ TOOLCHAIN_ROOT=/tmp/android-toolchain/
 #
 # =======================================================================
 
+# Parse command line
+for i in "$@"
+do
+case $i in
+    -j*)
+    JOBS="${i#*j}"
+    shift
+    ;;
+    -a=*|--arch=*)
+    BUILD_ARCHS="${i#*=}"
+    if [[ " ${BUILD_ARCHS[*]} " == *" all_with_deprecated "* ]]; then
+        BUILD_ALL_WITH_DEPS=true
+        BUILD_ALL=true
+    fi
+    shift
+    ;;
+    --gcc)
+    USE_GCC=yes
+    shift;;
+    --use-h264)
+    ENABLE_X264=yes
+    shift
+    ;;
+    --use-fdk-aac)
+    PREFER_FDK_AAC=yes
+    shift
+    ;;
+    -p=*|--platform=*)
+    PLATFORM_VERSION="${i#*=}"
+    shift
+    ;;
+    --no-subs)
+    BUILD_WITH_SUBS=no
+    shift
+    ;;
+    --ndk=*)
+    eval NDK="${i#*=}"
+    shift
+    ;;
+    -h|--help)
+    echo "Usage: build_android.sh [options]"
+    echo "  Options here will override options from files it may read from"
+    echo
+    echo "Help options:"
+    echo "  -h, --help                  displays this message and exits"
+    echo
+    echo "Building library options:"
+    echo "  --use-h264                  build with h264 encoding library"
+    echo "  --use-fdk-aac               build with fdk acc instead of vo-aacenc"
+    echo "  --no-subs                   do not build with subs"
+    echo "                              this will override the setting in ../VPlayer_library/jni/Android.mk"
+    echo
+    echo "Optional build flags:"
+    echo "  -j#[4]                      number of jobs, default is 4 (threads)"
+    echo "                              this will override the setting in ../VPlayer_library/build.gradle"
+    echo "                              'android.defaultConfig.externalNativeBuild.ndkBuild.arguments' line"
+    echo "  -p=[9], --platform=[9]      build with sdk platform"
+    echo "                              this will override the setting in ../VPlayer_library/build.gradle"
+    echo "                              'android.compileSdkVersion'"
+    echo "  --ndk=[DIR]                 path to your ndk and will override the environment variable"
+    echo "  -a=[LIST], --arch=[LIST]    enter a list of architectures to build with"
+    echo "                              this will override the setting in ../VPlayer_library/build.gradle"
+    echo "                              of the first match of line 'abiFilters'"
+    echo "                              options include mips, armeabi (both deprecated), arm64-v8a, x86,"
+    echo "                              x86_64, armeabi-v7a"
+    echo "                              'all' would built all non-deprecated architectures and"
+    echo "                              'all_with_deprecated' will build mips and armeabi with gcc and"
+    echo "                              clang with the rest"
+    echo
+    echo "Notes:"
+    echo "  armeabi and mips are deprecated and will only build with gcc, clang will"
+    echo "  be the prefered way to compile however you can force build everything with"
+    echo "  gcc."
+    exit 1
+    shift
+    ;;
+    *)
+    echo "Warning: unknown argument '${i#*=}'"
+    ;;
+esac
+done
+
+# Check environment for ndk build
 if [ -f "$NDK/ndk-build" ]; then
     NDK="$NDK"
 elif [ -z "$NDK" ]; then
     echo NDK variable not set or in path, exiting
     echo "   Example: export NDK=/your/path/to/android-ndk"
     echo "   Or add your ndk path to ~/.bashrc"
+    echo "   Or use --ndk=<path> with command"
     echo "   Then run ./build_android.sh"
     exit 1
 fi
 
-# Check the Application.mk for the architectures we need to compile for
+# Read the build.gradle for default inputs
 while read line; do
-    if [[ $line =~ ^APP_ABI\ *?:= ]]; then
-        line=`echo $line | sed 's/\\r//g'`
-        archs=(${line#*=})
-        if [[ " ${archs[*]} " == *" all "* ]]; then
-            build_all=true
-        fi
-        break
+    # Parse the platform sdk version
+    if [ -z "$PLATFORM_VERSION" ] && [[ $line = compileSdkVersion* ]]; then
+        a=${line##compileSdkVersion}
+        PLATFORM_VERSION=`echo $a | sed 's/\\r//g'`
     fi
-done <"../VPlayer_library/jni/Application.mk"
-if [ -z "$archs" ]; then
-    echo "Application.mk has not specified any architecture, please use 'APP_ABI:=<ARCH>'"
-    exit 1
-else
-    echo "Building for the following architectures: "${archs[@]}
+
+    # Parse for the architectures
+    if [ -z "$BUILD_ARCHS" ] && [[ $line = abiFilters* ]]; then
+        a=${line##abiFilters}
+        BUILD_ARCHS=`echo ${a%%//,*} | sed 's/\*[^]]*\*//g'| sed "s/'//g"| sed "s/\"//g"| sed "s/\///g"`
+    fi
+
+    # Read jobs
+    if [ -z "$JOBS" ] && [[ $line = arguments* ]]; then
+        JOBS=`echo $line | sed 's/.*-j\([0-9]*\).*/\1/'`
+    fi
+done <"../VPlayer_library/build.gradle"
+
+# Default jobs
+if [ -z "$JOBS" ]; then
+    JOBS=4
 fi
 
-# Get the platform version from Application.mk
-PLATFORM_VERSION=9
-while read line; do
-    if [[ $line =~ ^APP_PLATFORM\ *?:= ]]; then
-        line=`echo $line | sed 's/\\r//g'`
-        PLATFORM_VERSION=${line#*-}
-        break
+# Check if architectures are specified
+if [ -z "$BUILD_ARCHS" ]; then
+    echo "build.gradle has not specified any architectures, please use 'abiFilters'"
+    exit 1
+else
+    BUILD_ARCHS=`echo $BUILD_ARCHS | sed "s/,/ /g"`
+    if [[ " ${BUILD_ARCHS[*]} " == *" all "* ]]; then
+        BUILD_ALL=true
     fi
-done <"../VPlayer_library/jni/Application.mk"
+    # Check for architecture inputs are correct
+    if [ -z $BUILD_ALL ]; then
+        if [[ " ${BUILD_ARCHS[*]} " != *" armeabi-v7a "* ]] \
+               && [[ " ${BUILD_ARCHS[*]} " != *" armeabi "* ]] \
+               && [[ " ${BUILD_ARCHS[*]} " != *" mips "* ]] \
+               && [[ " ${BUILD_ARCHS[*]} " != *" x86 "* ]] \
+               && [[ " ${BUILD_ARCHS[*]} " != *" x86_64 "* ]] \
+               && [[ " ${BUILD_ARCHS[*]} " != *" arm64-v8a "* ]]; then
+           echo "Cannot build with invalid input architectures: ${BUILD_ARCHS[@]}"
+           exit
+       fi
+    fi
+    echo "Building for the following architectures: "${BUILD_ARCHS[@]}
+fi
+
+# Further parse the platform version
+if [ -z "$PLATFORM_VERSION" ]; then
+    PLATFORM_VERSION=9      # Default
+fi
 if [ ! -d "$NDK/platforms/android-$PLATFORM_VERSION" ]; then
     echo "Android platform doesn't exist, try to find a lower version than" $PLATFORM_VERSION
     while [ $PLATFORM_VERSION -gt 0 ]; do
@@ -144,12 +254,14 @@ else
 fi
 
 # Read from the Android.mk file to build subtitles (fribidi, libpng, freetype2, libass)
-while read line; do
-    if [[ $line =~ ^SUBTITLES\ *?:= ]]; then
-        echo "Going to build with subtitles"
-        BUILD_WITH_SUBS=true
-    fi
-done <"../VPlayer_library/jni/Android.mk"
+if [ -z "$BUILD_WITH_SUBS" ]; then
+    while read line; do
+        if [[ $line =~ ^SUBTITLES\ *?:= ]]; then
+            echo "Going to build with subtitles"
+            BUILD_WITH_SUBS=yes
+        fi
+    done <"../VPlayer_library/jni/Android.mk"
+fi
 
 OS=`uname -s | tr '[A-Z]' '[a-z]'`
 
@@ -251,7 +363,7 @@ function build_x264
         cd x264
         ./configure --prefix=$(pwd)/$PREFIX --disable-gpac --host=$HOST --enable-pic --enable-static $ADDITIONAL_CONFIGURE_FLAG || exit 1
         make clean || exit 1
-        make STRIP= -j4 install || exit 1
+        make STRIP= -j${JOBS} install || exit 1
         cd ..
     fi
 }
@@ -271,7 +383,7 @@ function build_amr
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 
@@ -302,7 +414,7 @@ function build_aac
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 function build_jpeg
@@ -322,7 +434,7 @@ function build_jpeg
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 function build_png
@@ -340,7 +452,7 @@ function build_png
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 function build_freetype2
@@ -360,8 +472,8 @@ function build_freetype2
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 function build_ass
@@ -382,7 +494,7 @@ function build_ass
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make V=1 -j4 install || exit 1
+    make V=1 -j${JOBS} install || exit 1
     cd ..
 }
 function build_fribidi
@@ -402,7 +514,7 @@ function build_fribidi
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 function build_ffmpeg
@@ -459,7 +571,7 @@ EOF
         $ADDITIONAL_CONFIGURE_FLAG \
         || exit 1
     make clean || exit 1
-    make -j4 install || exit 1
+    make -j${JOBS} install || exit 1
     cd ..
 }
 
@@ -475,10 +587,9 @@ function build_one {
 }
 function build_subtitles
 {
-    if [ ! -z "$BUILD_WITH_SUBS" ]; then
+    if [[ "$BUILD_WITH_SUBS" == "yes" ]]; then
         build_fribidi
         build_png
-        build_jpeg
         build_freetype2
         build_ass
     fi
@@ -504,6 +615,7 @@ function build
     build_amr
     build_aac
     build_subtitles
+    build_jpeg
     build_ffmpeg
     build_one
     echo "Successfully built $ARCH"
@@ -517,37 +629,45 @@ if [ -d "../VPlayer_library/jni/dist" ]; then
 fi
 
 # Deprecated architectures only compilable with GCC (which is also deprecated)
-if [ ! -z "$USE_GCC" ]; then
-    #mips
-    if [[ " ${archs[*]} " == *" mips "* ]] || [ "$build_all" = true ]; then
-    EABIARCH=mipsel-linux-android
-    ARCH=mips
-    OPTIMIZE_CFLAGS="-EL -march=mips32 -mips32 -mhard-float"
-    PREFIX=../../VPlayer_library/jni/ffmpeg-build/mips
-    OUT_LIBRARY=$PREFIX/libffmpeg.so
-    ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2 --disable-asm"
-    SONAME=libffmpeg.so
-    build
-    fi
+#mips
+if [[ " ${BUILD_ARCHS[*]} " == *" mips "* ]] || [ ! -z "$BUILD_ALL_WITH_DEPS" ]; then
+WAS_USING_GCC=$USE_GCC
+USE_GCC=yes
+EABIARCH=mipsel-linux-android
+ARCH=mips
+OPTIMIZE_CFLAGS="-EL -march=mips32 -mips32 -mhard-float"
+PREFIX=../../VPlayer_library/jni/ffmpeg-build/mips
+OUT_LIBRARY=$PREFIX/libffmpeg.so
+ADDITIONAL_CONFIGURE_FLAG="--disable-mipsdspr1 --disable-mipsdspr2 --disable-asm"
+SONAME=libffmpeg.so
+build
+if  [ -z "$WAS_USING_GCC" ]; then
+    USE_GCC=
+fi
+fi
 
-    #arm v5
-    if [[ " ${archs[*]} " == *" armeabi "* ]] || [ "$build_all" = true ]; then
-    EABIARCH=arm-linux-androideabi
-    ARCH=arm
-    CPU=armv5
-    OPTIMIZE_CFLAGS="-marm -march=$CPU"
-    PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi
-    OUT_LIBRARY=$PREFIX/libffmpeg.so
-    ADDITIONAL_CONFIGURE_FLAG=
-    SONAME=libffmpeg.so
-    # If you want x264, compile armv6
-    find x264/ -name "*.o" -type f -delete
-    build
-    fi
+#arm v5
+if [[ " ${BUILD_ARCHS[*]} " == *" armeabi "* ]] || [ ! -z "$BUILD_ALL_WITH_DEPS" ]; then
+WAS_USING_GCC=$USE_GCC
+USE_GCC=yes
+EABIARCH=arm-linux-androideabi
+ARCH=arm
+CPU=armv5
+OPTIMIZE_CFLAGS="-marm -march=$CPU"
+PREFIX=../../VPlayer_library/jni/ffmpeg-build/armeabi
+OUT_LIBRARY=$PREFIX/libffmpeg.so
+ADDITIONAL_CONFIGURE_FLAG=
+SONAME=libffmpeg.so
+# If you want x264, compile armv6
+find x264/ -name "*.o" -type f -delete
+build
+if  [ -z "$WAS_USING_GCC" ]; then
+    USE_GCC=
+fi
 fi
 
 #x86
-if [[ " ${archs[*]} " == *" x86 "* ]] || [ "$build_all" = true ]; then
+if [[ " ${BUILD_ARCHS[*]} " == *" x86 "* ]] || [ "$BUILD_ALL" = true ]; then
 EABIARCH=i686-linux-android
 ARCH=x86
 OPTIMIZE_CFLAGS="-m32"
@@ -559,7 +679,7 @@ build
 fi
 
 #x86_64
-if [[ " ${archs[*]} " == *" x86_64 "* ]] || [ "$build_all" = true ]; then
+if [[ " ${BUILD_ARCHS[*]} " == *" x86_64 "* ]] || [ "$BUILD_ALL" = true ]; then
 ARCH=x86_64
 EABIARCH=$ARCH-linux-android
 OPTIMIZE_CFLAGS="-m64"
@@ -571,7 +691,7 @@ build
 fi
 
 #arm64-v8a
-if [[ " ${archs[*]} " == *" arm64-v8a "* ]] || [ "$build_all" = true ]; then
+if [[ " ${BUILD_ARCHS[*]} " == *" arm64-v8a "* ]] || [ "$BUILD_ALL" = true ]; then
 CPU=arm64
 ARCH=$CPU
 HOST=aarch64-linux
@@ -585,7 +705,7 @@ build
 fi
 
 #arm v7vfpv3
-if [[ " ${archs[*]} " == *" armeabi-v7a "* ]] || [ "$build_all" = true ]; then
+if [[ " ${BUILD_ARCHS[*]} " == *" armeabi-v7a "* ]] || [ "$BUILD_ALL" = true ]; then
 EABIARCH=arm-linux-androideabi
 ARCH=arm
 CPU=armv7-a
@@ -605,3 +725,5 @@ ADDITIONAL_CONFIGURE_FLAG=--enable-neon
 SONAME=libffmpeg-neon.so
 build
 fi
+
+echo "All built"
